@@ -1,6 +1,6 @@
 ---
 title: "Week 9 Lab:  Time Series Data and Analysis Strategies"
-author: "Elena Austin for ENVH 556"
+author: "Chris Zuidema, Elena Austin for ENVH 556"
 date: "Winter 2021; Updated `r format(Sys.time(), '%B %d, %Y')`"
 output: 
     html_document:
@@ -135,7 +135,7 @@ consider exploring data from a different car.
 #-----gather file names for import-----
 
 # get filename paths for data files
-filenames <- list.files(data_dir) %>% str_subset("car1")
+filenames <- list.files(data_dir, recursive = T) %>% str_subset("car1")
 
 ```
 
@@ -163,8 +163,7 @@ gps
 
 ## P-Trak
 
-<!-- Elena & Lianne, can one of you add a sentence or two here about the
-importance/reasoning behind the screen and not-screened P-Trak -->
+In order to capture the change in ultrafine particles, two ultrafine particle counters (PTrak) instruments were used. One instrument was operated under standard conditions and reported the total particle number concentration of particles (#/cc) for all particles with diameters between 20 nm - 1 um. The second Ptrak operated using a screened inlet. The mesh size used and the number of layers of mesh were selected to intercept the smallest particles as they entered the system and changed the lower particle size to 36 nm. The difference between the unscreened and screened Ptrak instruments provided an estimate the particle concentration of 20-36 nm particles. This was verified using a particle Scanning Mobility Particle Sizer Spectrometer.
 
 ```{r p.trak, message=FALSE}
 #-----p-trak-----
@@ -435,6 +434,8 @@ correlated?
 
 ts_data %>% ACF(co2_conc, lag_max = 60) %>% autoplot()
 
+ts_data %>% PACF(co2_conc, lag_max = 60) %>% autoplot()
+
 ```
 
 
@@ -518,6 +519,7 @@ ts_new
 
 # check 5-minute average autocorrelation
 #ts_new %>% ACF(co2_conc) %>% autoplot()
+ts_new %>% PACF(co2_conc) %>% autoplot()
 ```
 
 All our example data are on the 1-second timescale; however, it is common to
@@ -611,6 +613,11 @@ mapping chunk interactively without re-downloading the stamen map.)
 # define the bounding box for the map using make_bbox 
 bbox <- make_bbox(ts_data)
 
+#refine bbox to align with study domain. Take out the approach to the study region (drive from UW and include location of the airport on the map).
+
+bbox[["top"]] = 47.6
+bbox[["bottom"]] = 47.43
+
 # make a map of the base layer of stamen tiles (without downloading messages)
 map <- get_stamenmap(bbox, zoom = 14, maptype = "terrain") %>% suppressMessages()
 
@@ -657,7 +664,7 @@ geom_text_repel(data = map_times,
                 force_pull = -.02) +
 
 # color scale
-scale_color_continuous(low = "#56B1F7", high = "#132B43") +  
+scale_color_continuous(type = "viridis") +  
 
 # labels
 labs(color = "CO2 (ppm)") +
@@ -672,20 +679,20 @@ map_co2
 
 
 ## Map P-Trak Ratios
-<!-- Lianne & Elena, 
-THIS IS NOT IN BRANTLEY, BUT IS IT SOMETHING TO KEEP? IT LIKELY NEEDS
-MODIFICATION AS I WAS JUST FIGURING OUT/DRAFTING SOME CODE -->
-
 As the $CO_2$ map shows, the data we've collected represent concentrations over 4 hours, meaning some of the variability we're observing could be a mix of spatial (i.e. the variability we see in the map) and temporal (i.e. the variability observed in timeseries plots) processes.
 
-Next, we'll use the P-Trak data to explore the idea of pollutant ratios...
+Next, we'll use the P-Trak data to explore the idea of pollutant ratios by plotting the proportion of smallest particles (20-36 nm to the total cocentration of UFP particles).
 
 ```{r map.ratios}
 #-----map ratios----
 
 # calculate ratio
 ts_data <- ts_data %>% 
-  mutate(ptrak_ratio = ptrak_screen_conc / ptrak_noscreen_conc)
+  mutate(ptrak_ratio = (ptrak_noscreen_conc- ptrak_screen_conc) / ptrak_noscreen_conc)
+
+#display ratios that are greater than zero 
+
+
 
 # map concentrations
 map_ratios <- basemap +
@@ -695,7 +702,8 @@ geom_point(data = ts_data %>% drop_na(ptrak_ratio),
            aes(x = longitude, y = latitude, color = ptrak_ratio)) + 
 
 # color scale
-scale_color_continuous(low = "#56B1F7", high = "#132B43") +  
+scale_color_continuous(type = "viridis", limits = c(0,1)) +  
+  
 
 # labels
 labs(color = "P-trak Ratio \nscreened:unscreened") +
@@ -781,6 +789,8 @@ I'm still working on this section. I read through the
 papers mentioned below to implement the minimum and percentile peak detection
 methods, but it still isn't clear to me how to implement -->
 
+<!-- I usually identify peak events through pca identification of sources. I'm not sure we can do it here with so few elements. The other option might be to look at the rate of change is CO2 to identify peaks, but again not necessarily a good fit for this lab -->
+
 With background removed from the $CO_2$ concentrations, we can now use the
 adjusted data to identify concentration peaks. Concentration peaks indicate
 potential sources of the pollutant. In this case, a $CO_2$ peak could be a large
@@ -795,23 +805,31 @@ rolling 25^th^ percentile of the data ([Choi et al.,
 ```{r id.peaks}
 #-----id peaks-----
 
-# specify the time in minutes from which to calculate the percentile
-time_min <- 5
 
-# specify the percentile considered to be background
-perc <- 0.25
-
-# we can use use `slider` to calculate these rolling statistics
+# we can use the ratio
 ts_data <- ts_data %>% 
-  mutate(co2_peak_min = slide_dbl(co2_adj, 
-                                 ~min(.x, na.rm = TRUE), 
-                                 .before = (time_min*60)/2, 
-                                 .after = (time_min*60)/2), 
-         co2_peak_perc = slide_dbl(co2_adj, 
-                                   ~quantile(.x, probs = perc, na.rm = TRUE), 
-                                   .before = (time_min*60)/2, 
-                                   .after = (time_min*60)/2), 
-         ) 
+  mutate(co2_lag = lead(co2_adj), 
+         
+         #calculate squared difference in CO2
+         co2_diff_sq = (co2_adj - co2_lag)^2,
+         
+         #windsorize
+         co2_diff_sq = replace(co2_diff_sq, co2_diff_sq> 
+                                  quantile(co2_diff_sq, 0.95,  na.rm=T), 
+                                quantile(co2_diff_sq, 0.95,  na.rm=T)),
+         #calculate a 2 minute rolling mean of CO2 differences
+         roll_co2_diff = rollapply(co2_diff_sq, 
+                                   120,
+                                   mean,
+                                   align='center',
+                                   fill=NA, 
+                                   partial = 100))
+
+
+
+ggplot(ts_data, aes(datetime, co2_adj, color = (roll_co2_diff)))+ 
+  scale_color_binned(n.breaks = 5) + 
+  geom_point() 
 
 ```
 
